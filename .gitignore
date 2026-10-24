@@ -1,0 +1,10 @@
+# Python artifacts
+__pycache__/
+*.pyc
+
+# Виртуальное окружение
+venv/
+
+# Секреты и креденшелы
+*.json
+.env
