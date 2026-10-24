@@ -37,10 +37,20 @@ TaoSwapClient -> validated models -> collect_validators (one subnet)
 
 ## Quick Start: Offline Demo
 
-Use **Python 3.10 or newer**. Open a terminal in the local directory containing
-this README, then run the commands below. The intended repository name is
-`bittensor-validator-data-pipeline`; no new Git repository or remote has been
-created yet. Dependency installation needs a package index; running the demo does not.
+Use **Python 3.10 or newer**. The intended GitHub repository is
+`scaleoka/bittensor-validator-data-pipeline`. It has not been created or
+published yet; use the existing local copy for now.
+
+After the GitHub repository has been created and the project published, clone it:
+
+```bash
+git clone https://github.com/scaleoka/bittensor-validator-data-pipeline.git
+cd bittensor-validator-data-pipeline
+```
+
+For the existing local copy, open a terminal in the directory containing this
+README. Run the following commands from the project directory. Dependency
+installation needs a package index; running the demo does not.
 
 `requirements.txt` contains only `requests`. `requirements-dev.txt` includes
 that runtime dependency and `pytest`. No Google Sheets SDK or credentials
@@ -139,9 +149,9 @@ on Windows when the account lacks permission to create symlinks.
 and `pull_request`. It uses `ubuntu-latest` and Python 3.12, installs
 `requirements-dev.txt`, and runs `python -m pytest -q -rs -p no:cacheprovider`
 with a 10-minute job timeout. It uses no GitHub Secrets and does not access
-Google Sheets or the TaoSwap API. There is no schedule,
-manual dispatch, artifact publication, or deployment. Token permissions are limited
-to `contents: read`, and checkout does not persist credentials.
+Google Sheets or the TaoSwap API. There is no schedule, manual dispatch,
+artifact publication, or deployment. Token permissions are limited to
+`contents: read`, and checkout does not persist credentials.
 
 Dependency installation uses the network; **Offline** refers to the synthetic
 test scenarios, not complete network isolation of the runner. Hosted CI has not
