@@ -1,3 +1,4 @@
+from io import BytesIO
 import importlib.util
 import json
 from pathlib import Path
@@ -8,16 +9,42 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import requests
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, localcontext
 
 from taoswap_client import ClientError, CollectionError, TaoSwapClient, collect_validators
 
 
 class FakeResponse:
-    def __init__(self, payload=None, *, status=200, text=None):
+    def __init__(self, payload=None, *, status=200, text=None, body=None,
+                 chunks=None, headers=None):
         self.status_code = status
-        self.text = json.dumps(payload) if text is None else text
+        text = json.dumps(payload) if text is None else text
+        self.body = text.encode('utf-8') if body is None else body
+        self.chunks = chunks
+        self.headers = {} if headers is None else headers
         self.closed = False
+        self.chunks_read = 0
+        self.chunk_sizes = []
+
+    @property
+    def text(self):
+        raise AssertionError('Response must be streamed, not loaded through text')
+
+    @property
+    def content(self):
+        raise AssertionError('Response must be streamed, not loaded through content')
+
+    def iter_content(self, chunk_size):
+        self.chunk_sizes.append(chunk_size)
+        chunks = self.chunks
+        if chunks is None:
+            chunks = (self.body[i:i + chunk_size]
+                      for i in range(0, len(self.body), chunk_size))
+        for chunk in chunks:
+            self.chunks_read += 1
+            if isinstance(chunk, Exception):
+                raise chunk
+            yield chunk
 
     def close(self):
         self.closed = True
@@ -30,6 +57,7 @@ class FakeSession(requests.Session):
         self.calls = []
 
     def get(self, url, **kwargs):
+        assert kwargs.get('stream') is True
         self.calls.append((url, kwargs))
         assert self.responses, 'Unexpected extra request'
         response = self.responses.pop(0)
@@ -83,7 +111,7 @@ def test_subnets_and_request_configuration():
         client = TaoSwapClient(connect_timeout=2, read_timeout=7)
     assert client.fetch_subnets()[0].netuid == 0
     assert session.calls == [('https://api.taoswap.org/subnets/', {
-        'params': None, 'timeout': (2, 7), 'allow_redirects': False,
+        'params': None, 'timeout': (2, 7), 'allow_redirects': False, 'stream': True,
     })]
     assert session.auth is None and not session.headers and not session.cookies
     assert session.trust_env is False
@@ -135,6 +163,7 @@ class RecordingAdapter(requests.adapters.HTTPAdapter):
     def __init__(self):
         super().__init__(max_retries=0)
         self.calls = []
+        self.responses = []
 
     def send(self, request, **kwargs):
         self.calls.append((request, kwargs))
@@ -142,7 +171,9 @@ class RecordingAdapter(requests.adapters.HTTPAdapter):
         response.status_code = 200
         response.url = request.url
         response.request = request
-        response._content = b'{"results": [{"id": 0, "name": null}]}'
+        response.raw = BytesIO(b'{"results": [{"id": 0, "name": null}]}')
+        response.close = Mock(wraps=response.close)
+        self.responses.append(response)
         return response
 
 
@@ -190,7 +221,10 @@ def test_prepared_requests_do_not_inherit_credentials_hooks_or_transport_setting
         assert settings['timeout'] == (2, 7)
         assert settings['proxies'] == {}
         assert settings['cert'] is None and settings['verify'] is True
-        assert settings['stream'] is False
+        assert settings['stream'] is True
+    for response in adapter.responses:
+        assert response._content is False
+        response.close.assert_called_once_with()
     assert owned.trust_env is False
     for forbidden in (auth, hook, prefixed_adapter.send, environment_auth, environment_proxies):
         forbidden.assert_not_called()
@@ -267,6 +301,70 @@ def test_invalid_json(text):
         client.fetch_subnets()
     assert error.value.kind == 'json'
     assert len(session.calls) == 1
+
+
+def test_decimal_decode_failure_is_normalized_and_response_closed():
+    invalid_text = json.dumps(page()).replace(
+        '"stake": 0', '"stake": 1e999999999999999999999999999999', 1,
+    )
+    valid_text = json.dumps(page()).replace(
+        '"stake": 0', '"stake": 0.123456789012345678901', 1,
+    )
+    invalid_response = FakeResponse(text=invalid_text)
+    valid_response = FakeResponse(text=valid_text)
+    client, session = client_for(invalid_response, valid_response)
+
+    with localcontext() as context:
+        context.traps[InvalidOperation] = True
+        # The real Decimal callback raises before model validation can run.
+        with pytest.raises(InvalidOperation):
+            json.loads(invalid_text, parse_float=Decimal)
+        with pytest.raises(ClientError) as error:
+            client.fetch_validator_page(2, page_size=1)
+        assert error.value.kind == 'json'
+        assert error.value.status_code is None
+        assert str(error.value) == 'API response is not valid JSON'
+        assert error.value.__suppress_context__
+        assert invalid_response.closed and len(session.calls) == 1
+
+        result = client.fetch_validator_page(2, page_size=1)
+        assert result.records[0].stake == Decimal('0.123456789012345678901')
+        assert valid_response.closed and len(session.calls) == 2
+
+
+def test_decimal_decode_failure_is_isolated_to_one_subnet():
+    from taoswap_collection import collect_subnet_validators
+
+    first_page = dict(page(total=2), netuid=0)
+    invalid_text = json.dumps(dict(page(2, total=2), netuid=0)).replace(
+        '"stake": 0', '"stake": 1e999999999999999999999999999999', 1,
+    )
+    responses = [
+        FakeResponse({'results': [{'id': 0, 'name': None},
+                                  {'id': 2, 'name': 'synthetic-two'}]}),
+        FakeResponse(first_page),
+        FakeResponse(text=invalid_text),
+        FakeResponse(page()),
+    ]
+    client, session = client_for(*responses)
+    with localcontext() as context:
+        context.traps[InvalidOperation] = True
+        result = collect_subnet_validators(client, page_size=1, max_pages=2)
+
+    assert [item.subnet.netuid for item in result.collections] == [2]
+    assert result.collections[0].collection.status == 'unknown'
+    assert len(result.errors) == 1
+    failure = result.errors[0]
+    assert failure.subnet.netuid == 0 and failure.category == 'json'
+    assert failure.status_code is None
+    assert failure.pages_received == failure.records_observed == 1
+    assert result.total_records_available == 1
+    assert result.total_records_observed == result.total_pages_received == 2
+    assert result.status == 'incomplete' and result.reason == 'subnet_errors'
+    assert not result.subnet_list_completeness_guaranteed
+    assert len(session.calls) == 4
+    assert [kwargs['params']['page'] for _, kwargs in session.calls[1:]] == [1, 2, 1]
+    assert all(response.closed for response in responses)
 
 
 @pytest.mark.parametrize('field,value,kind', [
@@ -442,3 +540,87 @@ def test_import_does_not_create_session_or_issue_requests(monkeypatch):
     monkeypatch.setitem(sys.modules, spec.name, module)
     spec.loader.exec_module(module)
     forbidden.assert_not_called()
+
+
+@pytest.mark.parametrize('headers', [
+    {}, {'Content-Length': '1'}, {'Content-Length': '999999999'},
+    {'Content-Length': 'invalid'},
+])
+def test_streamed_response_exact_byte_limit(monkeypatch, headers):
+    # UTF-8 bytes, not character count, determine the boundary.
+    body = '{"results": [{"id": 0, "name": "synthetic-\u03bb"}]}'.encode('utf-8')
+    assert len(body) > len(body.decode('utf-8'))
+    monkeypatch.setattr('taoswap_client.MAX_RESPONSE_BYTES', len(body))
+    response = FakeResponse(body=body, headers=headers)
+    client, session = client_for(response)
+    assert client.fetch_subnets()[0].netuid == 0
+    assert response.closed and len(session.calls) == 1
+    assert response.chunk_sizes == [64 * 1024]
+
+
+@pytest.mark.parametrize('across_chunks', [False, True])
+def test_oversized_response_stops_before_parsing(monkeypatch, across_chunks):
+    body = b'{"results": []}'
+    monkeypatch.setattr('taoswap_client.MAX_RESPONSE_BYTES', len(body))
+    chunks = [body, b' ', b'unread'] if across_chunks else [body + b' ', b'unread']
+    response = FakeResponse(chunks=chunks, headers={'Content-Length': str(len(body))})
+    client, session = client_for(response)
+    with patch('taoswap_client.json.loads') as decode:
+        with pytest.raises(ClientError) as error:
+            client.fetch_subnets()
+        decode.assert_not_called()
+    assert error.value.kind == 'json'
+    assert error.value.status_code is None
+    assert str(error.value) == 'API response exceeds size limit'
+    assert response.closed and len(session.calls) == 1
+    assert response.chunks_read == (2 if across_chunks else 1)
+
+
+@pytest.mark.parametrize('failure,kind', [
+    (requests.Timeout('synthetic-sensitive'), 'timeout'),
+    (requests.ConnectionError('synthetic-sensitive'), 'transport'),
+    (requests.exceptions.ChunkedEncodingError('synthetic-sensitive'), 'transport'),
+    (requests.exceptions.ContentDecodingError('synthetic-sensitive'), 'transport'),
+])
+def test_partial_body_failure_is_normalized_and_closed(failure, kind):
+    response = FakeResponse(chunks=[b'{"results":', failure, b'unread'])
+    client, session = client_for(response)
+    with patch('taoswap_client.json.loads') as decode:
+        with pytest.raises(ClientError) as error:
+            client.fetch_subnets()
+        decode.assert_not_called()
+    assert error.value.kind == kind
+    assert error.value.__suppress_context__
+    assert 'synthetic' not in str(error.value)
+    assert response.closed and response.chunks_read == 2
+    assert len(session.calls) == 1
+
+
+def test_oversized_response_is_isolated_to_one_subnet(monkeypatch):
+    from taoswap_collection import collect_subnet_validators
+
+    monkeypatch.setattr('taoswap_client.MAX_RESPONSE_BYTES', 1024)
+    responses = [
+        FakeResponse({'results': [{'id': 0, 'name': None}, {'id': 2, 'name': None}]}),
+        FakeResponse(dict(page(total=2), netuid=0)),
+        FakeResponse(chunks=[b' ' * 1024, b' ', b'unread']),
+        FakeResponse(page()),
+    ]
+    client, session = client_for(*responses)
+    result = collect_subnet_validators(client, page_size=1)
+    assert result.status == 'incomplete'
+    assert result.reason == 'subnet_errors'
+    assert not result.subnet_list_completeness_guaranteed
+    assert len(result.collections) == 1
+    assert result.collections[0].subnet.netuid == 2
+    assert result.collections[0].collection.status == 'unknown'
+    assert len(result.errors) == 1
+    failure = result.errors[0]
+    assert failure.subnet.netuid == 0 and failure.category == 'json'
+    assert failure.pages_received == 1 and failure.records_observed == 1
+    assert result.total_records_available == 1
+    assert result.total_records_observed == 2
+    assert result.total_pages_received == 2
+    assert len(session.calls) == 4
+    assert all(response.closed for response in responses)
+    assert responses[2].chunks_read == 2

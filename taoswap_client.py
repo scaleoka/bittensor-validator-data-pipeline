@@ -10,7 +10,7 @@ so this collector never emits complete without a future consistency contract.
 """
 
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import json
 import math
 from typing import Literal
@@ -25,6 +25,10 @@ from taoswap_models import (
 
 BASE_URL = 'https://api.taoswap.org'
 MAX_OFFSET = 10000
+# Local safety policy, not an API guarantee or a bound on total process memory.
+# Count decoded body bytes; Content-Length may describe compressed data or lie.
+MAX_RESPONSE_BYTES = 10 * 1024 * 1024
+RESPONSE_CHUNK_BYTES = 64 * 1024
 
 
 class ClientError(Exception):
@@ -115,29 +119,35 @@ class TaoSwapClient:
 
     def _get(self, path, params=None):
         self._session.cookies.clear()
+        response = None
         try:
             response = self._session.get(
                 BASE_URL + path, params=params, timeout=self.timeout,
-                allow_redirects=False,
+                allow_redirects=False, stream=True,
             )
-        except requests.Timeout:
-            raise ClientError('API request timed out', kind='timeout') from None
-        except requests.RequestException:
-            raise ClientError('API transport failure', kind='transport') from None
-        try:
             if not 200 <= response.status_code < 300:
                 raise ClientError(
                     f'API HTTP status {response.status_code}', kind='http',
                     status_code=response.status_code,
                 )
+            body = bytearray()
+            for chunk in response.iter_content(chunk_size=RESPONSE_CHUNK_BYTES):
+                if len(body) + len(chunk) > MAX_RESPONSE_BYTES:
+                    raise ClientError('API response exceeds size limit', kind='json')
+                body.extend(chunk)
             try:
                 return json.loads(
-                    response.text, parse_float=Decimal, parse_constant=_invalid_constant,
+                    body, parse_float=Decimal, parse_constant=_invalid_constant,
                 )
-            except ValueError:
+            except (ValueError, InvalidOperation):
                 raise ClientError('API response is not valid JSON', kind='json') from None
+        except requests.Timeout:
+            raise ClientError('API request timed out', kind='timeout') from None
+        except requests.RequestException:
+            raise ClientError('API transport failure', kind='transport') from None
         finally:
-            response.close()
+            if response is not None:
+                response.close()
 
     def fetch_subnets(self):
         payload = self._get('/subnets/')
