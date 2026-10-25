@@ -1,7 +1,8 @@
 """Bounded TaoSwap reads; no integration with the legacy runtime or writer.
 
-Documentation establishes page_size <= 500 and offset <= 10000. Collector
-stability checks are defensive policy, not additional server guarantees.
+The earlier inspected contract specifies page_size <= 500 and offset <= 10000.
+Its exact snapshot is not bundled; current live API compatibility is unverified.
+Collector stability checks are defensive policy, not additional server guarantees.
 (netuid, uid, hotkey) identifies an observation, not a proven immutable entity.
 Repeated observations or changed UID/hotkey associations make coverage unknown;
 all received rows are retained, without silently deduplicating them.

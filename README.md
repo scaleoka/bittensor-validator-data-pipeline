@@ -15,6 +15,15 @@ project contains the TaoSwap components and their offline tests.
 - Snapshot completeness is not guaranteed. Reading every advertised page or
   matching `total_count` does not establish a consistent snapshot.
 
+## API Contract Provenance
+
+The models and HTTP client were developed against an earlier inspected TaoSwap
+API contract. The exact historical contract snapshot is not bundled with this
+repository. Current live API compatibility has not been verified; the offline
+tests validate the implemented assumptions with synthetic responses, not the
+current service. Pagination limits and field requirements describe the contract
+used during development, not a guarantee of present server behavior.
+
 ## Architecture
 
 | Module | Responsibility |
@@ -37,9 +46,10 @@ TaoSwapClient -> validated models -> collect_validators (one subnet)
 
 ## Quick Start: Offline Demo
 
-Use **Python 3.10 or newer**. The GitHub repository is currently private;
-cloning requires an account with access. It will be publicly accessible only
-after its visibility is changed to public.
+Use **Python 3.12**, the version verified by hosted CI. Other Python versions
+are not covered by the hosted CI configuration.
+
+Clone access depends on the repository's visibility and your account permissions.
 
 Clone `scaleoka/bittensor-validator-data-pipeline`:
 
@@ -119,6 +129,14 @@ on Windows when the account lacks permission to create symlinks.
   page sizes from 1 to 500 and enforces the inspected contract's offset guard of
   10,000. There are no automatic retries. Budgets and per-request timeouts do not
   constitute an overall wall-clock deadline.
+- **Bounded HTTP responses:** the client streams decoded response bodies in
+  **64 KiB** chunks and enforces a **10 MiB** body limit before JSON parsing.
+  Each chunk is checked before it is appended to the body buffer; oversized
+  responses fail rather than being truncated. `Content-Length` is not trusted.
+  This is a local safety policy, separate from the output-file limit below, and
+  does not bound total process memory: decompression buffers, JSON decoding, and
+  parsed objects require additional memory. No decompression-ratio or JSON-depth
+  limit is implemented. The read timeout is not a total download deadline.
 - **Explicit uncertainty:** collectors report `incomplete` for known shortfalls
   and `unknown` when completeness cannot be established. The accepted collectors
   do not emit `complete`. Offset pagination provides no snapshot-consistency proof,
@@ -131,8 +149,9 @@ on Windows when the account lacks permission to create symlinks.
   In-memory models retain them. Other fields, such as subnet names, are not
   guaranteed to be anonymous.
 - **Atomic replacement:** the writer validates serialized UTF-8 JSON against a
-  **10 MiB** size limit before filesystem I/O. It writes a temporary file in the
-  output directory, flushes and fsyncs it, then uses `os.replace()` for the fixed
+  separate **10 MiB output-file** size limit before filesystem I/O. It writes a
+  temporary file in the output directory, flushes and fsyncs it, then uses
+  `os.replace()` for the fixed
   `taoswap-diagnostic.json` target. Failures before replacement preserve an existing
   regular target. Cleanup failures are reported and can leave a temporary file.
 - **Trusted directory required:** the directory must already exist. Final-component
@@ -153,9 +172,9 @@ artifact publication, or deployment. Token permissions are limited to
 `contents: read`, and checkout does not persist credentials.
 
 Dependency installation uses the network; **Offline** refers to the synthetic
-test scenarios, not complete network isolation of the runner. The initial
-[GitHub Actions run](https://github.com/scaleoka/bittensor-validator-data-pipeline/actions/runs/40198190675)
-passed on Python 3.12 for commit `89d38157ff0d2bed0709909621dbef58801ff552`.
+test scenarios, not complete network isolation of the runner. The
+[GitHub Actions run](https://github.com/scaleoka/bittensor-validator-data-pipeline/actions/runs/40209316831)
+passed on Python 3.12 for commit `a1a2741d511a65f2cc7b6e9387a44424882d679c`.
 This verifies the offline test suite, not production API behavior or snapshot consistency.
 
 ## Limitations

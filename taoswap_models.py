@@ -1,7 +1,9 @@
-"""Pure models for the TaoSwap envelopes inspected in Patch 02B.
+"""Pure models based on an earlier inspected TaoSwap API contract.
 
+The exact historical contract snapshot is not bundled with this repository;
+current live API compatibility has not been verified.
 The selected row fields are required; name, identity and yields_as_of are
-nullable. The five metrics are non-null JSON numbers in the published schema.
+nullable. The five metrics were non-null JSON numbers in the inspected schema.
 Unknown fields are ignored. Identity contents, hotkey syntax, metric units,
 ranges and equivalence to old MinersUnion fields are intentionally unspecified.
 No mechanism is selected and no freshness or collection completeness is inferred.
@@ -143,9 +145,10 @@ def _snapshot(row, netuid, path):
 def parse_validator_page(payload, requested_netuid):
     """Validate one page, including a truncated but internally consistent set.
 
-    OpenAPI defines reachable_count as min(total_count, total_pages * page_size).
-    It does not define exact page lengths, formulas for the navigation flags,
-    or the empty-set page convention. Preserve those values without deriving
+    The earlier inspected OpenAPI contract defines reachable_count as
+    min(total_count, total_pages * page_size). It does not define exact page
+    lengths, formulas for the navigation flags, or the empty-set page convention.
+    Preserve those values without deriving
     them. A short or empty page is not proof of collection completeness.
     Parsing does not certify completeness or authorize fetching another page,
     including a page outside the documented offset guard.
