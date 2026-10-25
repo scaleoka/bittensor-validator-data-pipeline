@@ -37,20 +37,19 @@ TaoSwapClient -> validated models -> collect_validators (one subnet)
 
 ## Quick Start: Offline Demo
 
-Use **Python 3.10 or newer**. The intended GitHub repository is
-`scaleoka/bittensor-validator-data-pipeline`. It has not been created or
-published yet; use the existing local copy for now.
+Use **Python 3.10 or newer**. The GitHub repository is currently private;
+cloning requires an account with access. It will be publicly accessible only
+after its visibility is changed to public.
 
-After the GitHub repository has been created and the project published, clone it:
+Clone `scaleoka/bittensor-validator-data-pipeline`:
 
 ```bash
 git clone https://github.com/scaleoka/bittensor-validator-data-pipeline.git
 cd bittensor-validator-data-pipeline
 ```
 
-For the existing local copy, open a terminal in the directory containing this
-README. Run the following commands from the project directory. Dependency
-installation needs a package index; running the demo does not.
+Run the following commands from the project directory. Dependency installation
+needs a package index; running the demo does not.
 
 `requirements.txt` contains only `requests`. `requirements-dev.txt` includes
 that runtime dependency and `pytest`. No Google Sheets SDK or credentials
@@ -154,8 +153,10 @@ artifact publication, or deployment. Token permissions are limited to
 `contents: read`, and checkout does not persist credentials.
 
 Dependency installation uses the network; **Offline** refers to the synthetic
-test scenarios, not complete network isolation of the runner. Hosted CI has not
-yet been verified by an actual run. The standalone project has not been published.
+test scenarios, not complete network isolation of the runner. The initial
+[GitHub Actions run](https://github.com/scaleoka/bittensor-validator-data-pipeline/actions/runs/40198190675)
+passed on Python 3.12 for commit `89d38157ff0d2bed0709909621dbef58801ff552`.
+This verifies the offline test suite, not production API behavior or snapshot consistency.
 
 ## Limitations
 
